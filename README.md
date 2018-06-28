@@ -10,4 +10,6 @@ this script
 6. gets the result of the transcription
 7. writes it out to a html and opml file
 
+usage: python3 natranscript.py
+
 
