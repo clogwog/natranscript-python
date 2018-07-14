@@ -21,6 +21,10 @@ import xml.etree.cElementTree as ET
 import google.cloud.speech_v1p1beta1 as speech
 from google.cloud import storage
 
+import subprocess
+from subprocess import Popen, PIPE
+import shlex
+
 # Instantiates a client
 storage_client = storage.Client()
 
@@ -32,6 +36,12 @@ commonNoAgendaPhrases = ['No Agenda', 'crackpot','buzzkill','drone star state','
 						 'knighting','ITM','NJNK', 'LGY', 'karma' , 'F. cancer','Sir.' , 'Donate', 'Dvorak.org/NA', 'call me a cab',
 						 'value for value','commonlaw', 'cludio','Zephyr', "John C. Dvorak"]
 
+def get_exitcode_stdout_stderr(cmd):
+	args = shlex.split(cmd)
+	proc = Popen(args, stdout=PIPE, stderr=PIPE)
+	out, err = proc.communicate()
+	exitcode = proc.returncode
+	return exitcode, out, err
 
 #just some feedback while the files are downloading
 def reporthook(blocknum, blocksize, totalsize):
@@ -46,14 +56,18 @@ def reporthook(blocknum, blocksize, totalsize):
 		sys.stderr.write("read %d\n" % (readsofar,))
 
 #save the transcript to an xml file. chose xml because we can transcode it to other outputs easily using xslt
-def write_transcript_to_opml_file(transcriptoutline, offset, response, episodenumber, hfile ):
+def write_transcript_to_opml_file(transcriptoutline, offset, response, episodenumber, hfile, videoid ):
 
 	timeOffset=offset*3600
+
+	hfile.write("https://youtu.be/" + videoid)
+	hfile.write("\n\n" )
 
 	for result in response.results:
 		alternative = result.alternatives[0]
 		#trcrpt = ET.SubElement(show, "transcription", confidence=str(alternative.confidence), rawtext=str(alternative.transcript))
 		paragraphoutline = str(alternative.transcript).strip()
+		htmlLine = paragraphoutline
 		print(u'Transcript: {}'.format(paragraphoutline))
 		#print('Confidence: {}'.format(alternative.confidence))
 		paragraph = str(alternative.transcript)
@@ -72,10 +86,15 @@ def write_transcript_to_opml_file(transcriptoutline, offset, response, episodenu
 		if len(firstdatetime) > 0:
 			if len(paragraphoutline.split()) > 1:
 				(firstword, restword)=paragraphoutline.split(' ', 1)
-				paragraphoutline = "<a target='naplayer' title='click to play' href='http://naplay.it/" + episodenumber + "/" +firstdatetime + "'>" + firstword + "</a> " + restword ;
-
+				youtubetime = firstdatetime.replace("-","h",1)
+				youtubetime = youtubetime.replace("-","m",1)
+				youtubetime = youtubetime + "s"
+				#paragraphoutline = "<a target='naplayer' title='click to play' href='http://naplay.it/" + episodenumber + "/" +firstdatetime + "'>" + firstword + "</a> " + restword ;
+				paragraphoutline = "<a target='yt' title='click to play' href='https://youtu.be/" + videoid + "?t=" +youtubetime + "'>" + firstword + "</a> " + restword ;
+				htmlLine = "<a href=\"#" + youtubetime + "\" \\><a title='click 2 play' href=\"javascript:jmpyt('" + videoid + "','" +youtubetime + "');\"  target=\"yt\">" + firstword + "</a> " + restword ;
+	
 		outline = ET.SubElement(transcriptoutline, "outline", text=paragraphoutline)
-		hfile.write(paragraphoutline)
+		hfile.write(htmlLine)
 		hfile.write("\n\n" )
 		
 
@@ -95,7 +114,7 @@ itemlist = xmldoc.getElementsByTagName('item')
 rssarray = []
 counter = 1
 for item in itemlist:
-    rssarray.append( {"index": counter, "title": item.getElementsByTagName("title")[0].childNodes[0].data, "url" : item.getElementsByTagName("enclosure")[0].getAttribute('url'), "length": item.getElementsByTagName("enclosure")[0].getAttribute('length') })
+    rssarray.append( {"index": counter, "title": item.getElementsByTagName("title")[0].childNodes[0].data, "url" : item.getElementsByTagName("enclosure")[0].getAttribute('url'), "length": item.getElementsByTagName("enclosure")[0].getAttribute('length') , "image" : item.getElementsByTagName("itunes:image")[0].getAttribute('href')})
     counter = counter + 1
 
 # ------ show the available episodes and ask which one to parse
@@ -119,6 +138,7 @@ while 1:
 
 # determine episode number
 url = rssarray[int(episodenumber) - 1]["url"]
+image = rssarray[int(episodenumber) -1]["image"]
 selectedtitle = rssarray[int(episodenumber) - 1]["title"]
 selectedepisodenumber = selectedtitle.split(':')[0]
 #pprint( rssarray[int(episodenumber) - 1])
@@ -134,6 +154,7 @@ except:
 print( "selected: " + episodenumber + " now downloading\n\repisode: " + selectedepisodenumber + "\n\rurl    : " + url)
 
 totalFileName = downloaddir + "/" + url.split('/')[-1]
+imageFileName = downloaddir + "/coverart.png" 
 
 skipDownload = False
 # check if the file already exists
@@ -148,6 +169,12 @@ if not skipDownload:
 	urlretrieve(url, totalFileName, reporthook)
 
 print("NO AGENDA EPISODE " +  selectedtitle + "”" )
+
+print("downloading cover art")
+urlretrieve(image, imageFileName, reporthook)
+
+
+
 
 
 # spilt mp3 into 1 hour chunks
@@ -164,7 +191,30 @@ print("totalLength: " + str(int(totalLength/60000)) + " minutes")
 print("numberoffullhours: " + str(numberoffullhours))
 print("remainder: " + str(int(remainder/60000)) + " minutes")
 
+
+#--------------------------
+print("combining audio and cover art into video file")
 simpleFileName = os.path.splitext(totalFileName)[0]
+
+cmd = "ffmpeg -r 1 -loop 1 -i " + imageFileName + " -i " + totalFileName + " -acodec copy -r 1 -shortest -vf scale=1280:1280 " + downloaddir + "/" + selectedepisodenumber + ".flv"
+
+return_code = subprocess.call(cmd, shell=True)
+
+print("uploading video to youtube")
+
+
+#strcommand = "youtube-upload --title='No Agenda Episode " + selectedtitle + "' --description='The No Agenda Show. \nEpisode " + selectedepisodenumber + " with Adam Curry and John C. Dvorak. \n http://noagendashow.com '  --category='News & Politics' --playlist='No Agenda' --client-secret=client_secrets.json  " + downloaddir + "/" + selectedepisodenumber + ".flv"
+
+#exitcode, out, err = get_exitcode_stdout_stderr(strcommand)
+
+
+#print( "exitcode: " + str(exitcode) + " out: " + out.decode("utf-8") )
+
+#videoid=out.decode("utf-8").strip()
+
+videoid="g6-FSx0Etc0".strip()
+
+#--------------------------
 
 
 bucket = storage_client.get_bucket(bucket_name)
@@ -220,7 +270,7 @@ for i, chunk in enumerate(chunks):
 	response = operation.result(timeout=6000)
 
 	#write transcription for chunk to file
-	write_transcript_to_opml_file(transcriptoutline, i, response, selectedepisodenumber, htmlfile)
+	write_transcript_to_opml_file(transcriptoutline, i, response, selectedepisodenumber, htmlfile, videoid)
 
 	#delete file from bucket after transcode
 	#blob.delete()
